@@ -1,5 +1,6 @@
-# 📋 app.py · [실습 6-1] 심화 ② AI 토론장 — 11주차 STEP 7 을 Streamlit 으로 (토론 한 번에 요청 1 + 2 × 라운드 + 심판 1)
+# 📋 app.py · [실습 6-1] 심화 ② AI 토론장 — 심사자 3명 버전
 import json
+from collections import Counter
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -32,7 +33,7 @@ def get_client():
 
 
 def build_prompt(stance, name, topic, style):
-    """찬성 · 반대 토론자의 시스템 프롬프트를 만든다 (11주차 PRO_PROMPT 와 같은 모양)"""
+    """찬성 · 반대 토론자의 시스템 프롬프트를 만든다"""
     return f"""너는 토론 대회의 {stance} 측 토론자 '{name}' 이야. 토론 주제는 '{topic}' 이야.
 규칙 1. 항상 {stance} 입장을 지킨다.
 규칙 2. 상대가 말했다면 먼저 한 문장으로 반박하고, 그다음 새 근거를 하나 든다.
@@ -40,7 +41,7 @@ def build_prompt(stance, name, topic, style):
 
 
 def debate_turn(my_history, my_prompt, heard):
-    """상대의 말(heard)을 내 기록에 user_input 으로 붙여 보내고, 성공하면 내 답까지 기록에 남긴다 (11주차와 같음)"""
+    """상대의 말(heard)을 내 기록에 user_input 으로 붙여 보내고, 성공하면 내 답까지 기록에 남긴다"""
     send_list = my_history + [{"type": "user_input", "content": [{"type": "text", "text": heard}]}]
     reply = client.interactions.create(model=MODEL_NAME, store=False, system_instruction=my_prompt, input=send_list)
     my_history[:] = send_list + [step.model_dump() for step in reply.steps]
@@ -53,7 +54,7 @@ except Exception:
     st.error("🔑 GEMINI_API_KEY 를 찾지 못했습니다 — Manage app → ⋮ → Settings → Secrets 칸을 확인하세요.")
     st.stop()
 
-st.title("⚖️ AI 토론장 장지혁")
+st.title("⚖️ AI 토론장")
 
 # ---------- ① 사이드바 — 토론 준비 ----------
 with st.sidebar:
@@ -63,23 +64,22 @@ with st.sidebar:
     style = st.selectbox("토론 말투", ["단정하고 논리적인 톤", "열정적인 대학생 톤", "차분한 전문가 톤"])
     start_btn = st.button("▶ 토론 시작", disabled=(topic.strip() == ""))
 
-# 세션 상태(보관함) 초기화
+# 세션 상태(보관함) 초기화 — ★ [심사자 3명 수정] verdicts 리스트로 변경
 if "lines" not in st.session_state:
     st.session_state.lines = []
-if "verdict" not in st.session_state:
-    st.session_state.verdict = None
+if "verdicts" not in st.session_state:
+    st.session_state.verdicts = []
 
 # ---------- ② 토론 진행 ----------
 if start_btn:
     st.session_state.lines = []
-    st.session_state.verdict = None
+    st.session_state.verdicts = []
 
     pro_prompt = build_prompt("찬성", "찬성봇", topic, style)
     con_prompt = build_prompt("반대", "반대봇", topic, style)
 
     pro_history = []
     con_history = []
-
     heard = START_LINE
 
     with st.spinner("AI 봇들이 토론을 진행하는 중입니다..."):
@@ -95,18 +95,19 @@ if start_btn:
                 st.session_state.lines.append(("반대봇", con_said))
                 heard = con_said
 
-            # 3. ③ 심판 판정
+            # ★ [심사자 3명 수정] 3명의 심판에게 판정 요청하기
             debate_text = "\n".join(f"{name}: {said}" for name, said in st.session_state.lines)
             judge_input = f"주제: {topic}\n\n<토론>\n{debate_text}\n</토론>\n\n위 토론을 읽고 승자와 이유를 판정해 줘."
             
-            reply = client.interactions.create(
-                model=MODEL_NAME,
-                store=False,
-                system_instruction=JUDGE_PROMPT,
-                input=judge_input,
-                response_format={"type": "text", "mime_type": "application/json", "schema": JUDGE_SCHEMA},
-            )
-            st.session_state.verdict = json.loads(reply.output_text)
+            for i in range(3):
+                reply = client.interactions.create(
+                    model=MODEL_NAME,
+                    store=False,
+                    system_instruction=f"{JUDGE_PROMPT} 너는 3명의 심판 중 {i+1}번 심판이다.",
+                    input=judge_input,
+                    response_format={"type": "text", "mime_type": "application/json", "schema": JUDGE_SCHEMA},
+                )
+                st.session_state.verdicts.append(json.loads(reply.output_text))
 
         except Exception as error:
             st.error(f"❌ 오류 발생: {error}")
@@ -115,14 +116,23 @@ if start_btn:
 for name, said in st.session_state.lines:
     st.chat_message(name, avatar=AVATARS.get(name, "💬")).markdown(said)
 
-# ---------- ④ 판정 보여 주기 ----------
-if st.session_state.verdict:
+# ---------- ④ 판정 보여 주기 (★ [심사자 3명 수정]) ----------
+if st.session_state.verdicts:
     st.divider()
-    st.subheader("🏆 심판 판정 결과")
-    v = st.session_state.verdict
     
-    col1, col2 = st.columns(2)
-    col1.metric("승자", v["winner"])
+    # 1. 다수결로 최종 승자 계산
+    winners = [v["winner"] for v in st.session_state.verdicts]
+    final_winner = Counter(winners).most_common(1)[0][0]
     
-    st.write(f"**판정 이유:** {v['reason']}")
-    st.info(f"💡 **가장 설득력 있던 문장:** \"{v['best_sentence']}\"")
+    st.subheader(f"🏆 최종 판정 결과: {final_winner} 승리 (다수결)")
+    st.caption(f"심판 투표 결과: 찬성 {winners.count('찬성')}표 / 반대 {winners.count('반대')}표 / 무승부 {winners.count('무승부')}표")
+    st.write("")
+
+    # 2. 3명의 심판 판정 결과를 3개의 컬럼으로 보여줌
+    cols = st.columns(3)
+    for index, (col, v) in enumerate(zip(cols, st.session_state.verdicts), 1):
+        with col:
+            st.markdown(f"### 👨‍⚖️ 심판 {index}")
+            st.metric("선택한 승자", v["winner"])
+            st.write(f"**이유:** {v['reason']}")
+            st.info(f"💡 \"{v['best_sentence']}\"")
