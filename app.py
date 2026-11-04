@@ -53,7 +53,7 @@ except Exception:
     st.error("🔑 GEMINI_API_KEY 를 찾지 못했습니다 — Manage app → ⋮ → Settings → Secrets 칸을 확인하세요.")
     st.stop()
 
-st.title("⚖️ AI 토론장")
+st.title("⚖️ AI 토론장 장지혁")
 
 # ---------- ① 사이드바 — 토론 준비 ----------
 with st.sidebar:
